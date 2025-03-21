@@ -74,8 +74,8 @@ class FirmwareEmulationSystem:
         return {
             "registers": self._get_register_state(gdb_process),
             "memory_map": self._get_memory_map(gdb_process),
-            "call_stack": self._get_call_stack(gdb_process),
-            "interrupt_state": self._get_interrupt_state(gdb_process),
+            "call_stack": self._get_call_stack(gdb_process),//注意读取调用的堆栈寄存器信息
+            "interrupt_state": self._get_interrupt_state(gdb_process),//中断状态的处理，读取一整套中断处理寄存器（包括状态寄存器）
             "peripheral_access": self._get_peripheral_access_info(gdb_process)
         }
 
