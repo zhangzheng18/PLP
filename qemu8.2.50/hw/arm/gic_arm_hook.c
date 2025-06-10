@@ -3,7 +3,7 @@
 #include "hw/arm/mmio_proxy.h"
 #include "hw/arm/gic_arm_hook.h"
 #include "qemu/log.h"
-#include "inttypes.h"
+#include "cpu.h"
 #include <string.h>
 
 void dump_cpu_state_for_irq(int cpu_index, int irq)
@@ -31,6 +31,11 @@ void dump_cpu_state_for_irq(int cpu_index, int irq)
             qemu_log("  REG[0x%02lx] = 0x%016lx\n", i, regval);
         }
     }
+}
+
+void gic_activate_irq_hook(int irq_num) {
+    // 当指定的IRQ被激活时，记录系统状态
+    dump_cpu_state_for_irq(0, irq_num);  // 假设使用CPU 0
 }
 
 
