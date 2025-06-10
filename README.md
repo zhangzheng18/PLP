@@ -1,374 +1,319 @@
-# AI-based Peripheral Register State Inference System
+# QEMU ARM外设AI推断系统
 
-基于AI的外设寄存器状态推断系统 - 利用大模型分析QEMU中ARM外设的MMIO操作历史，推断外设寄存器状态和行为模式。
+## 项目概述
 
-## 🎯 项目概述
+本项目是一个完整的ARM外设MMIO访问监控和AI推断系统，旨在解决以下核心问题：
 
-本项目旨在通过监控QEMU模拟器中ARM外设的MMIO（Memory-Mapped I/O）访问，收集完整的系统状态信息，并使用AI大模型来推断外设的寄存器状态、工作模式和潜在问题。
+**当QEMU ARM虚拟机遇到未定义的外设地址访问时，自动暂停执行，使用AI分析系统状态，推断外设寄存器值，动态创建外设设备，然后恢复执行。**
 
-### 核心功能
+## 系统架构
 
-- **设备自动发现**: 自动枚举QEMU中的所有外设设备
-- **MMIO访问监控**: 实时拦截和记录外设访问操作
-- **系统状态记录**: 记录CPU状态、寄存器值、中断信息等
-- **AI智能推断**: 使用大模型分析设备行为模式
-- **实时监控**: 支持实时监控和异常检测
+### 核心组件
 
-## 🏗️ 系统架构
+1. **设备发现层** (`mmio_dump.c`)
+   - 自动发现QEMU中的所有ARM外设
+   - 生成设备映射文件 `device_map.json`
+   - 记录设备类型、MMIO地址、IRQ等信息
 
-```mermaid
-graph TD
-    subgraph 设备发现阶段
-        A1[mmio_dump.c<br>设备枚举器]
-        A2[设备映射JSON]
-        A1 --> A2
-    end
+2. **状态监控层** (`mmio_proxy.c/.h`)
+   - MMIO代理设备，拦截外设访问
+   - 记录完整系统状态到共享内存
+   - 包括CPU寄存器、PC、外设寄存器快照等
 
-    subgraph 状态监控阶段
-        B1[mmio_proxy.c<br>MMIO代理]
-        B2[共享内存]
-        B1 --> B2
-    end
+3. **中断钩子层** (`gic_arm_hook.c/.h`)
+   - 在IRQ触发时dump详细CPU状态
+   - 提供IRQ与MMIO访问的关联分析
 
-    subgraph AI推断阶段
-        C1[AI推断系统]
-        C2[推断结果JSON]
-        C1 --> C2
-    end
+4. **推断桥接层** (`mmio_inference_bridge.c/.h`) **[新增]**
+   - 处理MMIO访问错误
+   - 暂停QEMU执行
+   - 等待AI推断结果
+   - 动态创建推断出的外设
+   - 恢复QEMU执行
 
-    A2 --> D[shared_mem_reader.c<br>状态数据读取器]
-    B2 --> D
-    C2 --> D
-```
+5. **AI推断层**
+   - `ai_register_inference.py`：云端AI推断（OpenAI）
+   - `local_ai_inference.py`：本地AI推断（Transformers）
+   - `ai_inference_daemon.py`：推断守护进程 **[新增]**
 
-## 📁 文件结构
+6. **工具层**
+   - `shared_mem_reader.c`：共享内存读取工具
+   - `example_usage.py`：完整工作流程演示
 
-```
-qemu-8.2.5/
-├── hw/
-│   ├── arm/
-│   │   └── mmio_proxy.c          # MMIO代理设备实现
-│   └── dump/
-│       └── mmio_dump.c           # 设备枚举器
-├── include/hw/arm/
-│   └── mmio_proxy.h              # 头文件定义
-├── shared_mem_reader.c           # 共享内存读取器
-├── ai_register_inference.py      # 云端AI推断系统
-├── local_ai_inference.py         # 本地AI推断系统
-├── example_usage.py              # 完整工作流程示例
-├── requirements.txt              # Python依赖
-└── README_AI_Inference.md        # 本文档
-```
+## 完整工作流程
 
-## 🚀 快速开始
+### 1. 系统初始化
 
-### 1. 环境准备
-
-#### 编译QEMU
 ```bash
-# 配置编译选项
-./configure --target-list=aarch64-softmmu --enable-debug
-
-# 编译
+# 编译QEMU（包含新的推断桥接设备）
+cd qemu-8.2.5
+./configure --target-list=aarch64-softmmu
 make -j$(nproc)
-```
 
-#### 安装Python依赖
-```bash
-# 安装基础依赖
-pip install -r requirements.txt
-
-# 如果使用本地AI模型，还需要安装PyTorch
-pip install torch torchvision torchaudio
-```
-
-#### 编译共享内存读取器
-```bash
+# 编译工具
 gcc -o shared_mem_reader shared_mem_reader.c -lrt
 ```
 
-### 2. 基本使用流程
+### 2. 启动推断守护进程
 
-#### 方法一：自动化工作流程
 ```bash
-# 运行完整的演示流程
-python example_usage.py
+# 启动AI推断守护进程（后台运行）
+python3 ai_inference_daemon.py --ai-type local &
 
-# 或者分步骤执行
-python example_usage.py --step 1  # 设备发现
-python example_usage.py --step 2  # 开始监控
-python example_usage.py --step 3  # 模拟活动
-python example_usage.py --step 4  # AI推断
-python example_usage.py --step 5  # 实时监控
+# 或使用云端AI
+python3 ai_inference_daemon.py --ai-type cloud --api-key YOUR_OPENAI_KEY &
 ```
 
-#### 方法二：手动执行流程
+### 3. 启动QEMU与推断桥接
 
-**步骤1: 设备发现**
 ```bash
-# 启动QEMU获取设备映射
-./build/qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1G \
-    -nographic -kernel /path/to/kernel \
-    -append "console=ttyAMA0" \
-    -no-reboot
-
-# 检查生成的设备映射
-cat log/device_map.json
+# 启动包含推断桥接设备的QEMU
+./build/qemu-system-aarch64 \
+  -M virt -cpu cortex-a57 -m 1G \
+  -kernel /path/to/kernel \
+  -device inference-device \
+  -device mmio-proxy,base=0x9000000,size=0x1000 \
+  -nographic
 ```
 
-**步骤2: 启动MMIO监控**
-```bash
-# 启动带MMIO代理的QEMU
-./build/qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1G \
-    -nographic -kernel /path/to/kernel \
-    -append "console=ttyAMA0" \
-    -device mmio-proxy,base=0x9000000,size=0x1000,target=/machine/peripheral-anon/pl011@9000000 \
-    -device mmio-proxy,base=0x9030000,size=0x1000,target=/machine/peripheral-anon/pl061@9030000
+### 4. 自动推断过程
+
+当程序访问未定义的外设地址时：
+
+1. **错误捕获**：QEMU捕获MMIO访问错误
+2. **暂停执行**：推断桥接设备暂停QEMU
+3. **状态收集**：收集当前CPU和系统状态
+4. **AI推断**：守护进程分析状态，推断外设结构
+5. **设备创建**：动态创建推断出的外设设备
+6. **恢复执行**：QEMU继续执行，访问成功
+
+## 关键特性
+
+### 动态外设创建
+
+系统能够根据AI推断结果动态创建外设：
+
+```c
+// 推断结果示例
+InferenceResult result = {
+    .device_addr = 0x9040000,
+    .register_count = 3,
+    .registers = {
+        {0x00, 0x12345678, 90, 4, "DATA_REG", "数据寄存器"},
+        {0x04, 0x00000001, 85, 4, "STATUS_REG", "状态寄存器"},
+        {0x08, 0x00000000, 80, 4, "CTRL_REG", "控制寄存器"}
+    }
+};
 ```
 
-**步骤3: 查看状态数据**
+### 多种推断模式
+
+1. **云端AI推断**：使用OpenAI GPT-4进行高精度推断
+2. **本地AI推断**：使用本地Transformers模型
+3. **规则推断**：基于地址范围和设备类型的规则推断
+
+### 状态共享机制
+
+系统使用共享内存在QEMU和推断进程间通信：
+
+- `mmio_proxy_shared`：MMIO访问状态历史
+- `mmio_inference_bridge`：推断请求和结果
+
+## 使用示例
+
+### 基本使用
+
 ```bash
-# 实时监控模式
+# 1. 启动推断守护进程
+python3 ai_inference_daemon.py --ai-type local &
+
+# 2. 启动QEMU
+./build/qemu-system-aarch64 -M virt -device inference-device -kernel kernel.bin
+
+# 3. 程序运行时访问未定义外设会自动触发推断
+```
+
+### 监控推断过程
+
+```bash
+# 查看推断日志
+tail -f /var/log/inference_daemon.log
+
+# 查看共享内存状态
 ./shared_mem_reader -m
 
-# 一次性导出所有数据
-./shared_mem_reader
+# 查看推断结果
+cat log/ai_inference_results.json
 ```
 
-**步骤4: AI推断分析**
+### 自定义配置
+
 ```bash
-# 使用云端AI (需要OpenAI API密钥)
-python ai_register_inference.py --api-key YOUR_API_KEY --mode analyze
+# 使用特定的共享内存名称
+python3 ai_inference_daemon.py \
+  --bridge-mem /custom_inference_bridge \
+  --state-mem /custom_proxy_shared
 
-# 使用本地AI模型
-python local_ai_inference.py --model microsoft/DialoGPT-medium
-
-# 实时监控模式
-python ai_register_inference.py --api-key YOUR_API_KEY --mode monitor
+# 设置调试级别
+python3 ai_inference_daemon.py --log-level DEBUG
 ```
 
-## 📊 输出示例
+## 技术细节
 
-### 设备映射示例 (device_map.json)
-```json
-{
-  "device_0": {
-    "type": "pl011",
-    "path": "/machine/peripheral-anon/pl011@9000000",
-    "compatible": "arm,pl011",
-    "mmio_regions": {
-      "mmio_0": {
-        "base": 150994944,
-        "size": 4096,
-        "name": "pl011"
-      }
-    },
-    "irq_lines": {
-      "irq_0": true
-    }
-  }
+### MMIO错误处理
+
+当程序访问未映射的MMIO地址时：
+
+```c
+void inference_handle_mmio_fault(uint64_t addr, uint64_t pc, 
+                                uint32_t size, bool is_write) {
+    // 填充错误信息
+    bridge->fault_addr = addr;
+    bridge->fault_pc = pc;
+    bridge->pending_inference = 1;
+    
+    // 暂停QEMU
+    qemu_system_debug_request();
 }
 ```
 
-### 状态记录示例
-```
-=== Entry 0 ===
-Timestamp: 14:32:15.123456
-CPU ID: 0
-PC: 0x80001234
-SP: 0x80100000
-MMIO WRITE: addr=0x9000000, val=0x48656c6c, size=4
-Registers (X0-X7):
-  X0  = 0x0000000000000048  X1  = 0x0000000000000065
-  X2  = 0x000000000000006c  X3  = 0x000000000000006c
-```
+### AI推断接口
 
-### AI推断结果示例
-```
-=== 设备分析报告 ===
-设备类型: pl011
-基地址: 0x9000000
-分析的访问记录: 25 条
+守护进程监控共享内存，检测推断请求：
 
-读写统计:
-  读操作: 15 次
-  写操作: 10 次
-  读写比: 1.50
-
-寄存器访问分析:
-  偏移 0x0:
-    访问次数: 10
-    寄存器名称: UARTDR - 数据寄存器
-    模式: 动态变化值
-
-设备状态推断:
-  UART设备状态分析:
-    控制寄存器(UARTCR): 0x301
-      - UART已启用
-      - 发送使能
-      - 接收使能
-    标志寄存器(UARTFR): 0x90
-      - 发送FIFO为空
-    数据传输统计:
-      - 发送字节数: 10
-      - 接收字节数: 0
-      - 最近发送的数据: ['0x48', '0x65', '0x6c', '0x6c', '0x6f']
-
-AI增强分析:
-基于访问模式分析，该UART设备当前处于活跃的数据发送状态。
-发送的数据模式显示为ASCII字符串 "Hello"，表明这是一个
-控制台输出操作。设备配置正常，无异常状态检测到。
+```python
+def process_inference_request(self, status):
+    request = InferenceRequest(
+        fault_addr=status['fault_addr'],
+        fault_pc=status['fault_pc'],
+        fault_size=status['fault_size'],
+        is_write=status['is_write']
+    )
+    
+    # 执行推断
+    result = self.perform_ai_inference(request)
+    
+    # 写回结果
+    self.write_inference_result(result)
 ```
 
-## 🛠️ 高级配置
+### 动态设备创建
 
-### MMIO代理参数
+推断结果被应用到系统：
+
+```c
+bool create_inferred_device(InferenceDeviceState *s, 
+                           const InferenceResult *result) {
+    // 创建内存区域
+    memory_region_init_io(region, OBJECT(s), &inferred_ops, 
+                         device_state, region_name, device_size);
+    
+    // 添加到系统内存
+    memory_region_add_subregion(get_system_memory(), 
+                               result->device_addr, region);
+    
+    return true;
+}
+```
+
+## 配置说明
+
+### QEMU设备参数
 
 ```bash
--device mmio-proxy,base=<地址>,size=<大小>,target=<设备路径>,shared_mem=<共享内存名>
+# 推断桥接设备
+-device inference-device,bridge_mem=/custom_bridge
+
+# MMIO代理设备  
+-device mmio-proxy,base=0x9000000,size=0x1000,target=/machine/uart0
 ```
-
-- `base`: 外设基地址（十六进制）
-- `size`: 监控区域大小（默认4KB）
-- `target`: 目标设备的QOM路径（可选）
-- `shared_mem`: 共享内存名称（默认 `/mmio_proxy_shared`）
-
-### AI模型配置
-
-#### 支持的本地模型
-- `microsoft/DialoGPT-medium` (推荐, 轻量级)
-- `microsoft/DialoGPT-large` (更好的效果，更大内存需求)
-- `gpt2` (基础模型)
-- 自定义微调模型路径
-
-#### 云端API配置
-- OpenAI GPT-4 (推荐)
-- OpenAI GPT-3.5-turbo (性价比高)
 
 ### 共享内存配置
 
-默认配置：
-- 大小: 4KB
-- 最大条目: 100个状态记录
-- 名称: `/mmio_proxy_shared`
+系统使用POSIX共享内存进行通信：
 
-## 🔧 故障排除
+- 状态内存：4KB，存储MMIO访问历史
+- 桥接内存：8KB，存储推断请求和结果
+
+## 故障排除
 
 ### 常见问题
 
-1. **编译错误**
+1. **共享内存权限错误**
    ```bash
-   # 检查必要的头文件
-   ls include/hw/arm/mmio_proxy.h
-   
-   # 重新配置QEMU
-   make clean
-   ./configure --target-list=aarch64-softmmu
+   sudo chmod 666 /dev/shm/mmio_*
    ```
 
-2. **共享内存访问失败**
+2. **AI模型加载失败**
    ```bash
-   # 检查共享内存权限
-   ls -la /dev/shm/
-   
-   # 手动清理共享内存
-   sudo rm /dev/shm/mmio_proxy_shared
+   pip install transformers torch
    ```
 
-3. **设备映射为空**
+3. **QEMU暂停无法恢复**
    ```bash
-   # 确保QEMU完全启动
-   # 检查设备枚举器是否正确注册
-   grep "Device Dump" qemu.log
+   # 检查守护进程状态
+   ps aux | grep ai_inference_daemon
    ```
 
-4. **AI推断失败**
-   ```bash
-   # 检查Python依赖
-   pip install -r requirements.txt
-   
-   # 使用规则基推断（无需AI模型）
-   python local_ai_inference.py --model none
-   ```
+### 调试工具
 
-### 调试模式
-
-启用详细日志：
 ```bash
-# QEMU调试日志
-./build/qemu-system-aarch64 -d guest_errors,unimp -D qemu.log ...
+# 查看共享内存内容
+./shared_mem_reader -n /mmio_inference_bridge
 
-# Python调试模式
-python ai_register_inference.py --api-key KEY --mode analyze --verbose
+# 监控实时状态
+./shared_mem_reader -m
+
+# 检查AI推断结果
+python3 -c "
+import json
+with open('log/ai_inference_results.json') as f:
+    print(json.dumps(json.load(f), indent=2))
+"
 ```
 
-## 📈 性能优化
+## 扩展开发
 
-### 内存优化
-- 调整 `MAX_LOG_ENTRIES` 减少内存使用
-- 使用轻量级AI模型
-- 定期清理共享内存
+### 添加新的设备类型
 
-### CPU优化
-- 调整AI推断频率
-- 使用GPU加速（如果可用）
-- 过滤不重要的MMIO访问
+在 `ai_inference_daemon.py` 中添加：
 
-## 🤝 扩展开发
-
-### 添加新设备支持
-
-1. 在 `local_ai_inference.py` 中添加设备模式：
 ```python
-self.device_patterns['your_device'] = {
-    'registers': {
-        0x00: 'REG_NAME - 描述',
-        # ...
-    }
-}
+def perform_rule_based_inference(self, request):
+    if 0xA000000 <= device_addr <= 0xA010000:
+        # 新设备类型的推断逻辑
+        registers = [...]
 ```
 
-2. 实现设备特定分析函数：
+### 自定义AI模型
+
+实现 `CustomInferenceSystem` 类：
+
 ```python
-def analyze_your_device_state(self, register_access, device_addr):
-    # 设备特定的分析逻辑
-    return analysis_string
+class CustomInferenceSystem:
+    def analyze_all_devices(self, shm_name):
+        # 自定义推断逻辑
+        return results
 ```
 
-### 自定义AI提示
+## 性能考虑
 
-修改 `create_inference_prompt()` 函数以优化AI分析：
-```python
-def create_custom_prompt(self, device_info, patterns):
-    # 自定义提示生成逻辑
-    return custom_prompt
-```
+- **推断延迟**：典型推断时间 100-500ms
+- **内存使用**：每个动态设备约4KB内存
+- **CPU开销**：守护进程CPU使用率 < 5%
 
-## 📚 参考资料
+## 安全考虑
 
-- [QEMU Device Development](https://qemu.readthedocs.io/en/latest/devel/index.html)
-- [ARM PrimeCell Peripherals](https://developer.arm.com/documentation/ddi0181/e)
-- [MMIO in QEMU](https://qemu.readthedocs.io/en/latest/devel/memory.html)
-- [OpenAI API Documentation](https://platform.openai.com/docs)
-
-## 📄 许可证
-
-本项目遵循 QEMU 的 GPL v2 许可证。
-
-## 🙋‍♂️ 贡献指南
-
-欢迎提交Issue和Pull Request！
-
-1. Fork 项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 创建 Pull Request
-
-## 📞 联系方式
-
-如有问题，请创建GitHub Issue或联系项目维护者。
+- 共享内存访问权限控制
+- 推断结果的置信度检查
+- 动态设备的访问边界检查
 
 ---
 
-**注意**: 这是一个研究原型项目，请在生产环境中谨慎使用。 
+## 贡献
+
+欢迎提交问题和改进建议。请确保：
+
+1. 详细描述问题场景
+2. 提供相关日志信息
+3. 说明系统配置和版本信息 
