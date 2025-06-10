@@ -1,196 +1,78 @@
-# AI-based Peripheral Register Inference System Makefile
+# AI推断系统构建文件
+# 用于编译和设置整个推断系统
 
-# 编译参数
-CC = gcc
-CFLAGS = -Wall -Wextra -O2 -g
-LDFLAGS = -lrt
-
-# Python
-PYTHON = python3
-PIP = pip3
-
-# 目录
-BUILD_DIR = build
-LOG_DIR = log
-INCLUDE_DIR = include
-
-# 目标文件
-SHARED_MEM_READER = shared_mem_reader
-QEMU_BINARY = $(BUILD_DIR)/qemu-system-aarch64
-
-# Python依赖
-PYTHON_DEPS = requirements.txt
-
-.PHONY: all clean install-deps compile-qemu compile-reader test demo help
+.PHONY: all clean setup qemu tools test example
 
 # 默认目标
-all: install-deps compile-reader
+all: setup qemu tools
 
-# 安装Python依赖
-install-deps:
-	@echo "安装Python依赖..."
-	$(PIP) install -r $(PYTHON_DEPS)
-	@echo "依赖安装完成"
+# 环境设置
+setup:
+	@echo "🔧 设置推断系统环境..."
+	@mkdir -p log
+	@pip3 install -r requirements.txt || echo "⚠️  Python依赖安装失败，请手动安装"
 
-# 编译QEMU (如果尚未编译)
-compile-qemu:
-	@echo "检查QEMU编译状态..."
-	@if [ ! -f $(QEMU_BINARY) ]; then \
-		echo "编译QEMU..."; \
-		./configure --target-list=aarch64-softmmu --enable-debug; \
-		make -j$$(nproc); \
-	else \
-		echo "QEMU已编译"; \
-	fi
+# 编译QEMU（包含推断组件）
+qemu:
+	@echo "🏗️  编译QEMU..."
+	@if [ ! -f configure ]; then echo "❌ 请在QEMU源码目录中运行"; exit 1; fi
+	@./configure --target-list=aarch64-softmmu --enable-debug
+	@make -j$$(nproc) qemu-system-aarch64
 
-# 编译共享内存读取器
-compile-reader:
-	@echo "编译共享内存读取器..."
-	$(CC) $(CFLAGS) -o $(SHARED_MEM_READER) shared_mem_reader.c $(LDFLAGS)
-	@echo "编译完成: $(SHARED_MEM_READER)"
+# 编译工具
+tools:
+	@echo "🔨 编译推断系统工具..."
+	@gcc -o shared_mem_reader shared_mem_reader.c -lrt
+	@chmod +x ai_inference_daemon.py
+	@chmod +x pci_device_inference_example.py
+	@chmod +x example_usage.py
 
-# 创建必要的目录
-setup-dirs:
-	@mkdir -p $(LOG_DIR)
-	@echo "目录创建完成"
+# 运行测试
+test:
+	@echo "🧪 运行推断系统测试..."
+	@python3 pci_device_inference_example.py --setup-only
 
-# 运行基本测试
-test: all setup-dirs
-	@echo "运行基本测试..."
-	@echo "1. 测试共享内存读取器..."
-	@if ./$(SHARED_MEM_READER) --help >/dev/null 2>&1; then \
-		echo "✓ 共享内存读取器正常"; \
-	else \
-		echo "✗ 共享内存读取器测试失败"; \
-	fi
-	@echo "2. 测试Python模块..."
-	@$(PYTHON) -c "import json, struct, mmap, os; print('✓ Python依赖正常')" || echo "✗ Python依赖有问题"
-	@echo "3. 测试AI推断模块..."
-	@$(PYTHON) -c "from local_ai_inference import LocalPeripheralRegisterInference; print('✓ 本地AI模块正常')" || echo "✗ 本地AI模块有问题"
+# 运行完整示例
+example: all
+	@echo "🚀 运行PCI设备推断示例..."
+	@python3 pci_device_inference_example.py
 
-# 运行完整演示
-demo: all setup-dirs
-	@echo "运行完整演示..."
-	$(PYTHON) example_usage.py
-
-# 演示特定步骤
-demo-step1: all setup-dirs
-	$(PYTHON) example_usage.py --step 1
-
-demo-step2: all setup-dirs
-	$(PYTHON) example_usage.py --step 2
-
-demo-step3: all setup-dirs
-	$(PYTHON) example_usage.py --step 3
-
-demo-step4: all setup-dirs
-	$(PYTHON) example_usage.py --step 4
-
-demo-step5: all setup-dirs
-	$(PYTHON) example_usage.py --step 5
-
-# 清理生成的文件
+# 清理构建文件
 clean:
-	@echo "清理文件..."
-	@rm -f $(SHARED_MEM_READER)
-	@rm -rf $(LOG_DIR)
-	@rm -f /tmp/mmio_proxy_shared_mock
-	@echo "清理完成"
+	@echo "🧹 清理构建文件..."
+	@rm -f shared_mem_reader
+	@rm -f test_pci_access.sh
+	@rm -rf log/*.json
+	@rm -f /dev/shm/mmio_* /dev/shm/pci_* 2>/dev/null || true
+	@echo "✅ 清理完成"
 
-# 完全清理（包括QEMU编译文件）
-distclean: clean
-	@echo "完全清理..."
-	@if [ -d $(BUILD_DIR) ]; then \
-		echo "清理QEMU编译文件..."; \
-		make clean 2>/dev/null || true; \
-	fi
-
-# 安装系统级依赖 (Ubuntu/Debian)
-install-system-deps:
-	@echo "安装系统依赖 (需要sudo权限)..."
-	sudo apt-get update
-	sudo apt-get install -y \
-		build-essential \
-		python3 \
-		python3-pip \
-		pkg-config \
-		libglib2.0-dev \
-		libpixman-1-dev \
-		ninja-build \
-		meson
-
-# 快速启动 - 编译所有组件
-quick-setup: install-system-deps install-deps compile-reader
-	@echo "快速设置完成！"
-	@echo "运行 'make demo' 来测试系统"
-
-# 创建开发环境
-dev-setup: quick-setup
-	@echo "创建开发环境..."
-	@echo "#!/bin/bash" > run_inference.sh
-	@echo "# 快速运行推断系统" >> run_inference.sh
-	@echo "python3 local_ai_inference.py --model microsoft/DialoGPT-medium" >> run_inference.sh
-	@chmod +x run_inference.sh
-	@echo "开发环境设置完成"
-	@echo "快速脚本已创建: ./run_inference.sh"
-
-# 性能测试
-benchmark: all setup-dirs
-	@echo "运行性能基准测试..."
-	@echo "测试共享内存读写性能..."
-	@time $(PYTHON) -c "
-import time
-import os
-from example_usage import PeripheralAnalysisWorkflow
-workflow = PeripheralAnalysisWorkflow()
-start = time.time()
-workflow.create_mock_shared_memory_data()
-print(f'模拟数据生成时间: {time.time() - start:.3f}s')
-"
-
-# 文档生成
-docs:
-	@echo "生成文档..."
-	@$(PYTHON) -c "
-import sys
-sys.path.append('.')
-# 这里可以添加文档生成逻辑
-print('文档生成功能待实现')
-"
+# 检查系统状态
+status:
+	@echo "📊 推断系统状态检查..."
+	@echo "QEMU可执行文件:"
+	@ls -la build/qemu-system-aarch64 2>/dev/null || echo "❌ QEMU未编译"
+	@echo "工具文件:"
+	@ls -la shared_mem_reader 2>/dev/null || echo "❌ 共享内存读取器未编译"
+	@echo "共享内存:"
+	@ls -la /dev/shm/mmio_* /dev/shm/pci_* 2>/dev/null || echo "📝 无活跃共享内存"
+	@echo "Python依赖:"
+	@python3 -c "import mmap, struct, json; print('✅ 基础依赖OK')" 2>/dev/null || echo "❌ Python依赖缺失"
 
 # 帮助信息
 help:
-	@echo "AI-based Peripheral Register Inference System"
-	@echo "=============================================="
+	@echo "AI推断系统构建工具"
 	@echo ""
-	@echo "可用的make目标:"
-	@echo ""
-	@echo "基础编译:"
-	@echo "  all                编译所有组件"
-	@echo "  compile-reader     编译共享内存读取器"
-	@echo "  compile-qemu       编译QEMU (如果需要)"
-	@echo ""
-	@echo "环境设置:"
-	@echo "  install-deps       安装Python依赖"
-	@echo "  install-system-deps 安装系统级依赖"
-	@echo "  quick-setup        快速设置所有环境"
-	@echo "  dev-setup          创建开发环境"
-	@echo ""
-	@echo "测试和演示:"
-	@echo "  test              运行基本测试"
-	@echo "  demo              运行完整演示"
-	@echo "  demo-step1        演示步骤1 (设备发现)"
-	@echo "  demo-step2        演示步骤2 (状态监控)"
-	@echo "  demo-step3        演示步骤3 (模拟活动)"
-	@echo "  demo-step4        演示步骤4 (AI推断)"
-	@echo "  demo-step5        演示步骤5 (实时监控)"
-	@echo "  benchmark         性能基准测试"
-	@echo ""
-	@echo "清理:"
-	@echo "  clean             清理生成的文件"
-	@echo "  distclean         完全清理"
+	@echo "可用目标:"
+	@echo "  all      - 编译所有组件（默认）"
+	@echo "  setup    - 设置环境和依赖"
+	@echo "  qemu     - 编译QEMU"
+	@echo "  tools    - 编译工具"
+	@echo "  test     - 运行测试"
+	@echo "  example  - 运行完整示例"
+	@echo "  status   - 检查系统状态"
+	@echo "  clean    - 清理构建文件"
+	@echo "  help     - 显示此帮助"
 	@echo ""
 	@echo "使用示例:"
-	@echo "  make quick-setup  # 首次设置"
-	@echo "  make demo         # 运行演示"
-	@echo "  make test         # 运行测试" 
+	@echo "  make -f Makefile.inference all"
+	@echo "  make -f Makefile.inference example" 
