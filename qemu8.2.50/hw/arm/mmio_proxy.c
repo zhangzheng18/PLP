@@ -4,7 +4,9 @@
 #include "qapi/error.h"
 #include "qom/object.h"
 #include "hw/registerfields.h"
-#include "cpu.h"
+#include "hw/arm/mmio_proxy.h"
+#include "exec/memory.h"
+#include "exec/memop.h"
 #include "exec/address-spaces.h"
 #include "exec/cpu-common.h"
 #include "target/arm/cpu.h"
@@ -12,11 +14,8 @@
 #include "qapi/visitor.h"
 #include "hw/qdev-properties.h"
 #include "hw/irq.h"
-#include "hw/arm/mmio_proxy.h"
-#include "exec/memory.h"
-#include "exec/memop.h"
 #include "hw/sysbus.h"
-#include "inttypes.h"
+#include "cpu.h"
 #include <assert.h>
 #include <string.h>
 #include <stdlib.h>
