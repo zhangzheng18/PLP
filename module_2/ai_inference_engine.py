@@ -2,6 +2,53 @@
 """
 通用AI推理引擎 - 支持多层级推断策略
 优先保证准确性，同时优化推理速度
+
+置信度定义和逻辑合理性说明:
+
+1. 置信度计算体系 (Confidence Calculation System)
+   置信度是推理质量的量化指标，范围[0.0, 1.0]，基于以下科学原理:
+   
+   - 多层级递进: 每层的置信度都基于前一层，体现了推理的层次性
+   - 加权累积: 不同因素有不同权重，反映其对推理质量的重要性
+   - 保守估计: 采用保守的基础值，避免过度自信导致的错误决策
+
+2. 各层置信度逻辑:
+   
+   第一层 - 模式分析置信度:
+   - 基础值(0.5): 保守起点，承认模式识别的不确定性
+   - 模式明确性(+0.2): 清晰的访问模式(读密集/写密集/单次)更可预测
+   - 时间规律性(+0.3): 规律的时间间隔表明系统化的访问行为
+   - 数据完整性(+0.2): 更多的寄存器访问信息提供更好的预测基础
+   
+   第二层 - 语义分析置信度:
+   - 继承模式置信度: 语义理解依赖于模式分析的准确性
+   - 意图明确性(+0.2): 明确的操作意图(数据传输/状态检查)提升理解深度
+   - 状态一致性(+0.1): 驱动状态与访问模式的一致性验证逻辑正确性
+   - 结果完整性(+0.1): 能预测副作用说明对硬件行为理解深入
+   
+   第三层 - 整体推理置信度:
+   - 关键寄存器覆盖(权重0.3): 最高权重，因为关键寄存器决定设备核心行为
+   - 值合理性检查(权重0.3): 预测值必须符合硬件约束和物理限制
+   - 寄存器完整性(权重0.2): 足够的寄存器数量保证预测的全面性
+   - 格式正确性(权重0.2): 输出格式决定结果的可用性
+
+3. 合理性验证原则:
+   
+   - 硬件约束验证: 所有寄存器值必须在合理的硬件范围内
+   - 逻辑一致性检查: 状态转换必须符合硬件规范
+   - 格式标准化: 确保输出符合调用方的接口要求
+   - 自动修复机制: 对轻微错误进行智能修复，提高可用性
+
+4. 置信度应用策略:
+   
+   - [0.8-1.0]: 高质量预测，可直接应用于生产环境
+   - [0.6-0.8]: 中等质量，建议在测试环境验证后使用
+   - [0.0-0.6]: 低质量，需要人工审核或重新推理
+
+返回值格式规范:
+- READ操作: {"read_value": "0x90", "registers": {...}}
+- WRITE操作: {"read_value": null, "registers": {...}}
+- 所有寄存器值均为标准化的8位16进制字符串格式
 """
 
 import json
@@ -244,20 +291,43 @@ class PatternAnalyzer:
         }
     
     def _calculate_pattern_confidence(self, analysis: Dict[str, Any]) -> float:
-        """计算模式分析置信度"""
-        confidence = 0.5  # 基础置信度
+        """
+        计算模式分析置信度
         
-        # 根据模式类型调整置信度
+        置信度计算逻辑:
+        1. 基础置信度 (0.5): 保守起点，避免过度自信
+        2. 模式类型加权 (+0.2): 明确的模式类型提升可信度
+        3. 时间规律性加权 (+0.3): 规律的访问模式更可预测
+        4. 数据完整性加权 (+0.2): 完整的访问信息提升准确性
+        
+        置信度范围: [0.0, 1.0]
+        - [0.0-0.3]: 低置信度，数据不足或模式不清晰
+        - [0.3-0.7]: 中等置信度，有一定模式但需谨慎
+        - [0.7-1.0]: 高置信度，模式清晰且数据完整
+        """
+        confidence = 0.5  # 基础置信度：保守估计，避免过度自信
+        
+        # 模式类型置信度调整 (+0.0~+0.2)
         pattern_type = analysis.get("pattern_type", "unknown")
         if pattern_type in ["read_heavy", "write_heavy", "single_access"]:
-            confidence += 0.2
+            confidence += 0.2  # 明确模式类型提升置信度
+        elif pattern_type == "mixed_access":
+            confidence += 0.1  # 混合模式稍微提升
+        # unknown 模式不调整
         
-        # 根据时间规律性调整
+        # 时间规律性置信度调整 (+0.0~+0.3)
         temporal = analysis.get("temporal_patterns", {})
         regularity = temporal.get("regularity", 0)
-        confidence += regularity * 0.3
+        confidence += regularity * 0.3  # 规律性越高，越可预测
         
-        return min(confidence, 1.0)
+        # 数据完整性置信度调整 (+0.0~+0.2)
+        frequency = analysis.get("access_frequency", {})
+        if len(frequency) > 0:
+            # 访问频率数据越丰富，置信度越高
+            data_richness = min(len(frequency) / 5.0, 1.0)  # 5个以上寄存器达到满分
+            confidence += data_richness * 0.2
+        
+        return min(confidence, 1.0)  # 确保不超过1.0
 
 class SemanticAnalyzer:
     """语义分析器 - 理解驱动行为意图"""
@@ -342,15 +412,53 @@ class SemanticAnalyzer:
     
     def _calculate_semantic_confidence(self, intent: Dict[str, Any], 
                                      pattern_analysis: Dict[str, Any]) -> float:
-        """计算语义分析置信度"""
+        """
+        计算语义分析置信度
+        
+        语义置信度基于以下逻辑:
+        1. 继承模式分析置信度: 上一层的置信度作为基础
+        2. 意图明确性加权 (+0.2): 明确的操作意图提升语义理解可信度
+        3. 驱动状态一致性 (+0.1): 状态与模式的一致性
+        4. 预期结果完整性 (+0.1): 能否预测完整的副作用
+        
+        合理性考虑:
+        - 语义理解依赖于模式分析，因此继承其置信度
+        - 明确的意图表示对硬件行为理解更深入
+        - 状态一致性反映逻辑推理的可靠性
+        """
         base_confidence = pattern_analysis.get("confidence", 0.5)
         
-        # 根据意图明确性调整
+        # 意图明确性置信度调整 (+0.0~+0.2)
         operation_intent = intent.get("operation_intent", "generic_operation")
         if operation_intent != "generic_operation":
-            base_confidence += 0.2
+            base_confidence += 0.2  # 明确意图提升语义理解置信度
+        
+        # 驱动状态一致性检查 (+0.0~+0.1)
+        driver_state = intent.get("driver_state", "unknown")
+        pattern_type = pattern_analysis.get("pattern_type", "unknown")
+        
+        # 检查状态与模式的一致性
+        if self._check_state_pattern_consistency(driver_state, pattern_type):
+            base_confidence += 0.1
+        
+        # 预期结果完整性 (+0.0~+0.1)
+        expected_outcome = intent.get("expected_outcome", {})
+        if (expected_outcome.get("register_changes") and 
+            expected_outcome.get("side_effects")):
+            base_confidence += 0.1  # 完整的预期结果提升置信度
         
         return min(base_confidence, 1.0)
+    
+    def _check_state_pattern_consistency(self, driver_state: str, pattern_type: str) -> bool:
+        """检查驱动状态与访问模式的一致性"""
+        consistency_map = {
+            ("active_operation", "read_heavy"): True,
+            ("active_operation", "write_heavy"): True,
+            ("active_operation", "mixed_access"): True,
+            ("simple_access", "single_access"): True,
+            ("complex_operation", "mixed_access"): True,
+        }
+        return consistency_map.get((driver_state, pattern_type), False)
     
     def _load_behavior_patterns(self) -> Dict[str, Any]:
         """加载行为模式定义"""
@@ -733,67 +841,97 @@ class MultiLevelInferenceEngine:
     
     def intelligent_inference(self, access_pattern: AccessPattern, 
                             device_name: str = "PL011") -> Dict[str, Any]:
-        """智能多层级推理"""
+        """
+        智能多层级推理主入口
+        
+        Args:
+            access_pattern: 访问模式，包含操作序列和上下文
+            device_name: 设备名称，用于查找设备配置
+            
+        Returns:
+            Dict包含以下字段:
+            - success: bool, 推理是否成功
+            - confidence: float, 推理置信度 [0.0-1.0]
+            - read_value: str|None, READ操作的返回值，WRITE操作为None
+            - registers: Dict[str, str], 操作后的寄存器状态
+            - inference_time: float, 推理耗时(秒)
+            - error: str, 错误信息(仅失败时)
+            
+        推理流程:
+        1. 模式识别 -> 2. 语义理解 -> 3. 知识匹配 -> 4. LLM生成 -> 5. 验证优化
+        """
         start_time = time.time()
-        results = {}
         
         try:
             # 获取设备配置
             device_config = self.knowledge_base.get_device_config(device_name)
             if not device_config:
-                raise ValueError(f"未找到设备配置: {device_name}")
+                return {
+                    "success": False,
+                    "error": f"未找到设备配置: {device_name}",
+                    "confidence": 0.0,
+                    "read_value": None,
+                    "registers": {},
+                    "inference_time": time.time() - start_time
+                }
             
             # 第一层：模式识别
             logger.info("第一层：MMIO访问模式识别")
             pattern_analysis = self.pattern_analyzer.analyze_mmio_sequence(access_pattern)
-            results["pattern_analysis"] = pattern_analysis
             
             # 如果模式置信度很高，尝试快速路径
             if pattern_analysis.get("confidence", 0) > 0.9:
                 quick_result = self._try_quick_inference(pattern_analysis, device_config)
                 if quick_result:
-                    results["quick_path"] = True
-                    results["prediction"] = quick_result
-                    results["inference_time"] = time.time() - start_time
-                    return results
+                    logger.info("使用快速推理路径")
+                    quick_result["inference_time"] = time.time() - start_time
+                    quick_result["quick_path"] = True
+                    return quick_result
             
             # 第二层：语义理解
             logger.info("第二层：驱动行为语义理解")
             semantic_intent = self.semantic_analyzer.understand_driver_behavior(
                 pattern_analysis, device_config
             )
-            results["semantic_intent"] = semantic_intent
             
             # 第三层：知识库匹配
             logger.info("第三层：设备知识库匹配")
             knowledge_match = self.knowledge_base.search_device_database(pattern_analysis)
-            results["knowledge_match"] = knowledge_match
             
             # 第四层：动态LLM生成
             logger.info("第四层：动态LLM推理生成")
             llm_prediction = self._generate_with_llm(
                 access_pattern, device_config, semantic_intent, knowledge_match
             )
-            results["llm_prediction"] = llm_prediction
             
-            # 验证和后处理
-            final_prediction = self._validate_and_refine(
-                llm_prediction, device_config
-            )
-            results["prediction"] = final_prediction
+            # 第五层：验证和后处理
+            logger.info("第五层：验证和结果优化")
+            final_result = self._validate_and_refine(llm_prediction, device_config)
             
-            # 更新知识库
-            if final_prediction and pattern_analysis.get("confidence", 0) > 0.7:
-                self._update_knowledge_base(access_pattern, final_prediction, device_config)
+            # 添加推理时间
+            final_result["inference_time"] = time.time() - start_time
             
-            results["inference_time"] = time.time() - start_time
-            return results
+            # 更新知识库（仅在成功且置信度足够时）
+            if (final_result.get("success") and 
+                final_result.get("confidence", 0) > 0.7 and
+                pattern_analysis.get("confidence", 0) > 0.6):
+                self._update_knowledge_base(access_pattern, final_result, device_config)
+            
+            return final_result
             
         except Exception as e:
             logger.error(f"智能推理失败: {e}")
-            results["error"] = str(e)
-            results["inference_time"] = time.time() - start_time
-            return results
+            import traceback
+            traceback.print_exc()
+            
+            return {
+                "success": False,
+                "error": f"推理过程异常: {str(e)}",
+                "confidence": 0.0,
+                "read_value": None,
+                "registers": {},
+                "inference_time": time.time() - start_time
+            }
     
     def _try_quick_inference(self, pattern_analysis: Dict[str, Any], 
                            device_config: DeviceConfig) -> Optional[Dict[str, Any]]:
@@ -901,48 +1039,227 @@ class MultiLevelInferenceEngine:
     
     def _validate_and_refine(self, prediction: Dict[str, Any], 
                            device_config: DeviceConfig) -> Dict[str, Any]:
-        """验证和优化预测结果"""
+        """
+        验证和优化预测结果，确保输出格式符合要求
+        
+        返回值格式说明:
+        - 对于READ操作: 包含read_value(读取到的值)和registers(所有寄存器状态)
+        - 对于WRITE操作: read_value为null，registers包含写入后的寄存器状态
+        
+        验证逻辑:
+        1. 基础结构验证: 确保包含必要字段
+        2. 约束验证: 检查是否满足推理约束
+        3. 自动修复: 尝试修复轻微错误
+        4. 置信度评估: 计算最终置信度
+        5. 格式标准化: 确保返回值符合调用要求
+        """
         if not prediction:
-            return {"error": "无预测结果"}
+            return {
+                "success": False,
+                "error": "无预测结果",
+                "confidence": 0.0,
+                "read_value": None,
+                "registers": {}
+            }
         
         # 应用约束验证
         is_valid, errors = self.config.constraints.validate_prediction(prediction)
         
-        result = {
-            "prediction": prediction,
-            "validation_passed": is_valid,
-            "validation_errors": errors,
-            "confidence": self._calculate_overall_confidence(prediction, device_config)
-        }
+        # 计算置信度
+        confidence = self._calculate_overall_confidence(prediction, device_config)
         
         # 如果验证失败但错误不严重，尝试修复
+        final_prediction = prediction
+        auto_fixed = False
+        
         if not is_valid and len(errors) <= 2:
             fixed_prediction = self._attempt_fix(prediction, errors, device_config)
             if fixed_prediction:
-                result["prediction"] = fixed_prediction
-                result["validation_passed"] = True
-                result["auto_fixed"] = True
+                final_prediction = fixed_prediction
+                is_valid = True
+                auto_fixed = True
+                # 重新计算修复后的置信度
+                confidence = self._calculate_overall_confidence(final_prediction, device_config)
         
+        # 标准化输出格式
+        standardized_result = self._standardize_output_format(final_prediction)
+        
+        result = {
+            "success": is_valid,
+            "confidence": confidence,
+            "read_value": standardized_result.get("read_value"),
+            "registers": standardized_result.get("registers", {}),
+            "validation_passed": is_valid,
+            "auto_fixed": auto_fixed
+        }
+        
+        # 只有在失败时才包含错误信息
+        if not is_valid:
+            result["validation_errors"] = errors
+            result["error"] = f"验证失败: {'; '.join(errors)}"
+        
+        return result
+    
+    def _standardize_output_format(self, prediction: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        标准化输出格式，确保符合调用方要求
+        
+        标准格式:
+        {
+            "read_value": "0x90" | null,  # READ操作的返回值，WRITE操作为null
+            "registers": {                # 操作后的寄存器状态
+                "register_name": "0x00000000",
+                ...
+            }
+        }
+        """
+        result = {
+            "read_value": prediction.get("read_value"),
+            "registers": prediction.get("registers", {})
+        }
+        
+        # 确保read_value格式正确
+        read_value = result["read_value"]
+        if read_value is not None and not isinstance(read_value, str):
+            result["read_value"] = str(read_value)
+        
+        # 确保所有寄存器值都是字符串格式
+        standardized_registers = {}
+        for reg_name, reg_value in result["registers"].items():
+            if isinstance(reg_value, int):
+                standardized_registers[reg_name] = f"0x{reg_value:08x}"
+            elif isinstance(reg_value, str):
+                # 确保16进制格式正确
+                try:
+                    val = int(reg_value, 16)
+                    standardized_registers[reg_name] = f"0x{val:08x}"
+                except ValueError:
+                    # 如果无法解析，保持原值
+                    standardized_registers[reg_name] = reg_value
+            else:
+                standardized_registers[reg_name] = str(reg_value)
+        
+        result["registers"] = standardized_registers
         return result
     
     def _calculate_overall_confidence(self, prediction: Dict[str, Any], 
                                     device_config: DeviceConfig) -> float:
-        """计算整体置信度"""
+        """
+        计算整体推理置信度
+        
+        整体置信度综合考虑以下因素:
+        1. 基础置信度 (0.5): 保守的起始点
+        2. 寄存器完整性 (+0.2): 预测的寄存器数量是否充分
+        3. 关键寄存器覆盖度 (+0.3): 是否包含设备的关键寄存器
+        4. 值合理性 (+0.3): 预测值是否在合理范围内
+        5. 格式正确性 (+0.2): 输出格式是否符合要求
+        
+        合理性逻辑:
+        - 关键寄存器覆盖度最重要，因为它们决定设备核心行为
+        - 值合理性确保预测符合硬件约束
+        - 寄存器完整性保证预测的全面性
+        - 格式正确性确保结果可用性
+        
+        置信度阈值:
+        - [0.8-1.0]: 高质量预测，可直接使用
+        - [0.6-0.8]: 中等质量，需要验证
+        - [0.0-0.6]: 低质量，需要重新推理或人工干预
+        """
         confidence = 0.5  # 基础置信度
         
-        # 根据寄存器数量调整
-        if "registers" in prediction:
-            reg_count = len(prediction["registers"])
-            if reg_count >= len(device_config.critical_registers):
-                confidence += 0.2
+        if "registers" not in prediction:
+            return 0.2  # 没有寄存器预测，置信度很低
         
-        # 根据关键寄存器覆盖度调整
-        if "registers" in prediction:
-            covered_critical = set(prediction["registers"].keys()) & device_config.critical_registers
+        registers = prediction["registers"]
+        
+        # 寄存器完整性评估 (+0.0~+0.2)
+        reg_count = len(registers)
+        min_expected = max(3, len(device_config.critical_registers))
+        if reg_count >= min_expected:
+            completeness = min(reg_count / (min_expected * 1.5), 1.0)
+            confidence += completeness * 0.2
+        
+        # 关键寄存器覆盖度评估 (+0.0~+0.3) - 最重要的指标
+        if device_config.critical_registers:
+            covered_critical = set(registers.keys()) & device_config.critical_registers
             coverage_ratio = len(covered_critical) / len(device_config.critical_registers)
-            confidence += coverage_ratio * 0.3
+            confidence += coverage_ratio * 0.3  # 关键寄存器覆盖度权重最高
+        
+        # 值合理性评估 (+0.0~+0.3)
+        valid_values = 0
+        total_values = len(registers)
+        
+        for reg_name, reg_value in registers.items():
+            if self._validate_register_value(reg_name, reg_value, device_config):
+                valid_values += 1
+        
+        if total_values > 0:
+            value_validity = valid_values / total_values
+            confidence += value_validity * 0.3
+        
+        # 格式正确性评估 (+0.0~+0.2)
+        format_score = self._evaluate_format_correctness(prediction)
+        confidence += format_score * 0.2
         
         return min(confidence, 1.0)
+    
+    def _validate_register_value(self, reg_name: str, reg_value: str, 
+                                device_config: DeviceConfig) -> bool:
+        """验证寄存器值的合理性"""
+        try:
+            # 检查格式
+            if not isinstance(reg_value, str) or not reg_value.startswith("0x"):
+                return False
+            
+            # 转换为整数
+            value = int(reg_value, 16)
+            
+            # 检查基本范围 (32位寄存器)
+            if value < 0 or value > 0xFFFFFFFF:
+                return False
+            
+            # 检查设备特定约束
+            if reg_name in device_config.register_constraints:
+                constraints = device_config.register_constraints[reg_name]
+                value_range = constraints.get("range", (0, 0xFFFFFFFF))
+                if not (value_range[0] <= value <= value_range[1]):
+                    return False
+            
+            return True
+            
+        except (ValueError, TypeError):
+            return False
+    
+    def _evaluate_format_correctness(self, prediction: Dict[str, Any]) -> float:
+        """评估预测结果的格式正确性"""
+        score = 0.0
+        
+        # 检查基本结构 (0.4)
+        if "registers" in prediction and isinstance(prediction["registers"], dict):
+            score += 0.4
+        
+        # 检查read_value字段存在性 (0.3)
+        if "read_value" in prediction:
+            score += 0.3
+            
+            # 检查read_value格式 (额外0.2)
+            read_value = prediction["read_value"]
+            if read_value is None or (isinstance(read_value, str) and read_value.startswith("0x")):
+                score += 0.2
+        
+        # 检查寄存器值格式 (0.1)
+        registers = prediction.get("registers", {})
+        if registers:
+            valid_format_count = 0
+            for reg_value in registers.values():
+                if isinstance(reg_value, str) and reg_value.startswith("0x"):
+                    valid_format_count += 1
+            
+            if len(registers) > 0:
+                format_ratio = valid_format_count / len(registers)
+                score += format_ratio * 0.1
+        
+        return min(score, 1.0)
     
     def _attempt_fix(self, prediction: Dict[str, Any], errors: List[str], 
                     device_config: DeviceConfig) -> Optional[Dict[str, Any]]:
@@ -980,46 +1297,14 @@ class MultiLevelInferenceEngine:
         except Exception as e:
             logger.warning(f"知识库更新失败: {e}")
 
-def main():
-    """测试多层级推理引擎"""
-    # 配置
-    config = InferenceConfig()
-    config.constraints.required_registers = {"uartfr", "uartcr"}
-    config.constraints.min_registers_count = 3
-    
-    # 创建引擎
-    engine = MultiLevelInferenceEngine(config)
-    
-    # 测试访问模式
-    access_sequence = [
-        {
-            "type": "READ",
-            "register": "uartfr",
-            "offset": "0x18",
-            "timestamp": time.time(),
-            "operation": "PL011 UART READ offset=0x18",
-            "current_registers": {
-                "uartdr": "0x00000000",
-                "uartfr": "0x00000090",
-                "uartcr": "0x00000f01",
-                "uartibrd": "0x00000027",
-                "uartfbrd": "0x00000004",
-                "uartlcr_h": "0x00000070",
-                "uartimsc": "0x00000050"
-            }
-        }
-    ]
-    
-    access_pattern = AccessPattern(
-        sequence=access_sequence,
-        timestamp=time.time(),
-        context={"device": "PL011", "driver": "uart_driver"}
-    )
-    
-    print("开始多层级智能推理...")
-    result = engine.intelligent_inference(access_pattern, "PL011")
-    
-    print(f"推理结果: {json.dumps(result, indent=2, ensure_ascii=False)}")
+# 模块不包含测试代码，仅提供推理引擎功能
 
-if __name__ == "__main__":
-    main() 
+# 主要导出类，供外部调用
+__all__ = [
+    'MultiLevelInferenceEngine',
+    'InferenceConfig', 
+    'InferenceConstraints',
+    'AccessPattern',
+    'DeviceConfig',
+    'PeripheralType'
+] 
